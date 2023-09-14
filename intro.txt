@@ -1,0 +1,10 @@
+First Name: Mian
+
+Last Name: Zhao
+
+Age:23
+
+Study: 2018-2021 Eco et Maths in TSE
+       2021-2023 Eco et Stat  in TSE
+
+Experience of using python: From L3 in 2021 to M2 2023
