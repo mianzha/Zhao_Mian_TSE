@@ -1,0 +1,426 @@
+
+```{r}
+rm(list=ls())
+library(tidyverse)
+library(TidyDensity)
+library(shiny)
+library(shinydashboard)
+library(shinyBS)
+library(knitr)
+library(shinyscreenshot)
+library(periscope)
+library(shinyWidgets)
+
+
+
+```
+
+```{r}
+n_assemblies = 100
+simulations = list()
+K = 100
+N = 5  
+
+stack_chain_length <- 10
+observables_length <- 8
+
+ratios <- numeric(N)
+abs_diff <- numeric(N) 
+
+
+set.seed(12345)
+
+for (n in 1:N) {
+  simulation_n = list()  # Nouvelle liste pour stocker les K simulations pour n
+  
+  
+  alphas <- runif(stack_chain_length, -20, 20)
+
+  means_X <- rnorm(stack_chain_length, mean = 0, sd = 40)
+  
+  alpha_abs <- abs(alphas)
+  ratios[n] <- min(alpha_abs) / max(alpha_abs)
+  abs_diff[n] <- abs(max(alphas) - min(alphas))
+
+  Stochastic_process_df <- data.frame() %>%
+    rbind(data.frame(alphas=alphas)) %>%
+    cbind(data.frame(means_X = means_X)) %>%
+    #mutate(ratios = ratios,
+           #abs_diff = abs_diff)%>%
+    rowwise() %>%
+    mutate(sigmas_X = runif(1, abs(means_X)*.01, abs(means_X)*.05))
+
+  observed_id <- sample(1:stack_chain_length, observables_length)
+
+  Stochastic_process_df <- Stochastic_process_df %>%
+    rowid_to_column("id") %>%
+    mutate(observed = ifelse(id %in% observed_id, "YES", "NO")) %>%
+    select(id, observed, everything())
+  
+
+  
+  for (i in 1:K) {
+    
+    Stochastic_process_df <- data.frame(alphas = alphas, means_X = means_X, ratios = ratios[n], abs_diff = abs_diff[n]) %>%
+    #rbind(data.frame(alphas=alphas)) %>%
+    #cbind(data.frame(means_X = means_X)) %>%
+    rowwise() %>%
+    mutate(sigmas_X = runif(1, abs(means_X)*.01, abs(means_X)*.05))
+
+    observed_id <- sample(1:stack_chain_length, observables_length)
+
+    Stochastic_process_df <- Stochastic_process_df %>%
+      rowid_to_column("id") %>%
+     mutate(observed = ifelse(id %in% observed_id, "YES", "NO")) %>%
+     select(id, observed, everything())
+
+    observed_id <- sample(1:stack_chain_length, observables_length)
+    observed_columns <- lapply(observed_id, function(x){paste0("Contributor_", x)[[1]]}) %>%
+      unlist()
+
+
+    Stochastic_process_df <- Stochastic_process_df %>%
+    rowwise() %>%
+    mutate(RV_results = list(rnorm(n_assemblies, means_X, sigmas_X))) %>%
+    unnest(cols = RV_results) %>% 
+    mutate(id_assy = rep(seq(1:n_assemblies), stack_chain_length)) %>%
+    rowwise() %>%
+    mutate(contributors = alphas * RV_results) %>%
+    mutate(observed_contributors = ifelse(id %in% observed_id, contributors, NA)) %>%
+    group_by(id_assy) %>%
+    mutate(Y_output = sum(contributors))%>%
+    mutate(Y_model = sum(observed_contributors, na.rm = T)) %>%
+    ungroup() %>%
+    select(-RV_results) %>%
+      pivot_wider(id_cols=c(id_assy, Y_output, Y_model), 
+              names_from = id, 
+              names_prefix = "Contributor_", 
+              values_from = contributors) %>%
+    select(id_assy, starts_with("Contributor"), everything())
+
+    if(T){
+    sigma_output <- abs(0.03 * mean(Stochastic_process_df$Y_output))
+
+    Stochastic_process_df <-Stochastic_process_df %>%
+      rowwise() %>%
+      mutate(Y_output = Y_output + rnorm(n = 1, mean = 0, sd = sigma_output)) %>%
+      ungroup()
+    }
+
+    
+    simulation_n[[i]] = Stochastic_process_df
+  }
+  
+  simulations[[n]] = simulation_n
+  
+  cat("For n =", n, ", ratios =", ratios[n], ", abs_diff =", abs_diff[n], "\n")
+}
+
+
+```
+
+
+```{r}
+
+simulations[[1]][[1]]
+
+```
+
+
+```{r}
+simulations_analysis = list()
+for (n in 1:N){
+  simulations_analysis_0 = list()
+  
+  for (i in 1:K){
+  Stochastic_process_df_analysis <- simulations[[n]][[i]] %>%
+    
+    ungroup() %>%
+    mutate(mean_Y_output = cummean(Y_output),
+           mean_Y_model = cummean(Y_model),
+           pour = 100*(mean_Y_model-lag(mean_Y_model,1))/lag(mean_Y_model,1)) %>%
+    mutate(Y_corrected_model = Y_model + (lag(mean_Y_output, 1) - lag(mean_Y_model, 1)),
+           ver = cvar(Y_model) ,
+           ver_out =cvar(mean_Y_output),
+           ver_model = cvar(Y_model),
+           ver_output = cvar(Y_output),
+           biais = Y_model - Y_output,
+           Diff = Y_output - Y_model,
+           ver_diff = cvar(Diff) ,
+           mse = biais^2 + ver)%>%
+    group_by(isna = is.na(Y_corrected_model)) %>%
+    mutate(mean_Y_corrected_model = lag(cummean(Y_corrected_model))) %>%
+    ungroup() %>%
+    select(-isna) %>%
+    #  mutate(Y_corrected_model = ifelse(is.na(Y_corrected_model), 0, Y_corrected_model)) %>%
+    #  mutate(mean_Y_corrected_model = cummean(Y_corrected_model)) %>%
+    mutate(sd_Y_output = csd(Y_output),
+           sd_Y_model = csd(Y_model)) %>%
+    mutate(median_Y_output = cmedian(Y_output),
+           median_Y_model = cmedian(Y_model))
+  
+  simulations_analysis_0[[i]] = Stochastic_process_df_analysis
+  }
+  simulations_analysis[[n]] = simulations_analysis_0
+}
+```
+
+
+```{r}
+view(simulations_analysis[[5]][[4]])
+```
+
+
+#### 𝑅𝑎𝑡𝑖𝑜_1 = i/(i-1) * (i-2)/(i-1) * 𝑐𝑣𝑎𝑟(𝑌_𝑚𝑜𝑑𝑒𝑙) /𝑙𝑎𝑔(𝑐𝑣𝑎𝑟(𝑌_𝑚𝑜𝑑𝑒𝑙),1)
+```{r, include =FALSE}
+ratio_1_list = list()
+
+for (n in 1:N){
+  ratio_1_list_0 = list()
+  
+  for (j in 1:K){ ####################
+   
+    ratio_1 = c()
+
+    for (i in 3:100) {
+  
+  # Effectuer le test de Fisher pour chaque ligne de la variation de la difference des moyennes cumulée 
+    result <-
+      c((simulations_analysis[[n]][[j]]$id_assy[i-1]*simulations_analysis[[n]][[j]]$ver_model[i-1]/(simulations_analysis[[n]][[j]]$id_assy[i-1] -1))        /((simulations_analysis[[n]][[j]]$id_assy[i]*simulations_analysis[[n]][[j]]$ver_model[i]/(simulations_analysis[[n]][[j]]$id_assy[i]-1))))
+  
+  
+    ratio_1 = c(ratio_1, result)  ################################# add new result
+    ratio_1_list_0[[j]] = ratio_1 ####### list_var is a list of 10 elements with each element being a list of diff2 results.
+  }
+ 
+  }
+  ratio_1_list[[n]] = ratio_1_list_0
+}
+
+
+```
+
+#### 𝐷𝑖𝑓𝑓_r_1 = [𝑐𝑢𝑚𝑚𝑒𝑎𝑛(𝑌_𝑚𝑜𝑑𝑒𝑙) − 𝑙𝑎𝑔( 𝑐𝑢𝑚𝑚𝑒𝑎𝑛(𝑌_𝑚𝑜𝑑𝑒𝑙) , 1 )] /𝑙𝑎𝑔( 𝑐𝑢𝑚𝑚𝑒𝑎𝑛(𝑌_𝑚𝑜𝑑𝑒𝑙) , 1 )
+```{r, include = FALSE}
+diff_r_1_list = list()
+
+for (n in 1:N){
+  diff_r_1_list_0 = list()
+  
+  for (j in 1:K){  #####################
+  
+    diff_r_1 = c()
+
+    for (i in 3:100) {
+  
+  # Effectuer le test de comparaison moyenne pour chaque ligne pour la difference des moyennes cumulées
+    result <- 
+      c( (simulations_analysis[[n]][[j]]$mean_Y_model[i] - simulations_analysis[[n]][[j]]$mean_Y_model[i-1]) /
+                                                    simulations_analysis[[n]][[j]]$mean_Y_model[i-1] )
+  
+    diff_r_1= c(diff_r_1, result)################################# add new result
+  
+    diff_r_1_list_0[[j]] = diff_r_1 ####### tot_moy_list is a list of 10 elements with each element being a list of diff1 results.
+  
+
+    }
+  }
+  diff_r_1_list[[n]] = diff_r_1_list_0
+}
+
+
+``` 
+
+
+
+#### 𝑅𝑎𝑡𝑖𝑜_2 = i/(i-1) * (i-2)/(i-1) * 𝑐𝑣𝑎𝑟(𝑌_𝑚𝑜𝑑𝑒𝑙 − 𝑌_𝑜𝑢𝑡𝑝𝑢𝑡) /𝑙𝑎𝑔(𝑐𝑣𝑎𝑟(𝑌_𝑚𝑜𝑑𝑒𝑙 − 𝑌_𝑜𝑢𝑡𝑝𝑢𝑡),1)
+```{r, include =FALSE}
+ratio_2_list = list()
+
+for (n in 1:N){
+  ratio_2_list_0 = list()
+  
+  for (j in 1:K){ ####################
+   
+    ratio_2 = c()
+
+    for (i in 3:100) {
+  
+    # Effectuer le test de Fisher pour chaque ligne de la variation de la difference des moyennes cumulée 
+    result <-
+      c((simulations_analysis[[n]][[j]]$id_assy[i-1]*simulations_analysis[[n]][[j]]$ver_diff[i-1]/(simulations_analysis[[n]][[j]]$id_assy[i-1] -1))        /((simulations_analysis[[n]][[j]]$id_assy[i]*simulations_analysis[[n]][[j]]$ver_diff[i]/(simulations_analysis[[n]][[j]]$id_assy[i]-1))))
+  
+  
+    ratio_2 = c(ratio_2, result)  ################################# add new result
+    ratio_2_list_0[[j]] = ratio_2 ####### list_var is a list of 10 elements with each element being a list of diff2 results.
+    }
+  }
+  ratio_2_list[[n]] = ratio_2_list_0
+}
+
+ 
+```
+
+
+#### 𝐷𝑖𝑓𝑓_r_2 = [𝑐𝑢𝑚𝑚𝑒𝑎𝑛(𝑌_𝑚𝑜𝑑𝑒𝑙 − 𝑌_𝑜𝑢𝑡𝑝𝑢𝑡) − 𝑙𝑎𝑔( 𝑐𝑢𝑚𝑚𝑒𝑎𝑛(𝑌_𝑚𝑜𝑑𝑒𝑙 − 𝑌_𝑜𝑢𝑡𝑝𝑢𝑡) , 1 )] /𝑙𝑎𝑔( 𝑐𝑢𝑚𝑚𝑒𝑎𝑛(𝑌_𝑚𝑜𝑑𝑒𝑙 − 𝑌_𝑜𝑢𝑡𝑝𝑢𝑡) , 1 )
+```{r, include = FALSE}
+diff_r_2_list = list()
+
+for (n in 1:N){
+  diff_r_2_list_0 = list()
+  
+  for (j in 1:K){  #####################
+  
+    diff_r_2 = c()
+
+    for (i in 3:100) {
+  
+  # Effectuer le test de comparaison moyenne pour chaque ligne pour la difference des moyennes cumulées
+    result <- 
+      c( ((simulations_analysis[[n]][[j]]$mean_Y_output[i] - simulations_analysis[[n]][[j]]$mean_Y_model[i]) -    
+        (simulations_analysis[[n]][[j]]$mean_Y_output[i-1] - simulations_analysis[[n]][[j]]$mean_Y_model[i-1])) /
+        (simulations_analysis[[n]][[j]]$mean_Y_output[i-1] - simulations_analysis[[n]][[j]]$mean_Y_model[i-1]) )
+  
+    diff_r_2= c(diff_r_2, result)################################# add new result
+  
+    diff_r_2_list_0[[j]] = diff_r_2 ####### tot_moy_list is a list of 10 elements with each element being a list of diff2 results.
+  
+    }
+  }
+  diff_r_2_list[[n]] = diff_r_2_list_0
+}
+
+``` 
+
+
+Plot des K courbes des ratio_1
+```{r}
+for (n in 1:N){
+  plot(ratio_1_list[[n]][[1]], col="green", ylim =c(0.69,2.8), pch=16, ylab="Ratio des variances", type = "l")
+
+  for (i in 2:K) {
+    lines(ratio_1_list[[n]][[i]], col = i)  # Ajouter la courbe avec une couleur différente pour chaque dataframe
+  }
+  title(xlab = paste("For stack chain", n, ", ratios =", round(ratios[n],2), ", abs_diff =", round(abs_diff[n],2), "\n"))
+}
+
+```
+
+Plot des K courbes des ratio_2
+```{r}
+for (n in 1:N){
+  plot(ratio_2_list[[n]][[1]], col="green", ylim =c(0.69,2.8), pch=16, ylab="Ratio des variances", type = "l")
+
+  for (i in 2:K) {
+    lines(ratio_2_list[[n]][[i]], col = i)  # Ajouter la courbe avec une couleur différente pour chaque dataframe
+  }
+  title(xlab = paste("For stack chain", n, ", ratios =", round(ratios[n],2), ", abs_diff =", round(abs_diff[n],2), "\n"))
+}
+
+```
+
+
+#### Determination n by ratio_1
+```{r}
+list_rangs_var_1 = c()
+
+for (n in 1:N){
+  list_rangs_var_1_0 = list()
+  
+  for (i in 1:K){
+    valeur_1 = NULL
+  
+    m = which( (ratio_1_list[[n]][[i]]<1.05)&(ratio_1_list[[n]][[i]]>0.95) & (diff_r_1_list[[n]][[i]]>-0.005)&(diff_r_1_list[[n]][[i]]<0.005), arr.ind = TRUE) 
+  ######### 1) critère de convergence : variance        2) critère de convergence : difference 
+  ########### il y a plusieur n, n is a list 
+  # eg: n=[19,20,23,24,25,26,27]
+      valeur_1 <- 0      ################################################    
+    for (j in 1:length(m)){                                              ######### 2) critère de convergence : extension
+      a = m[j]
+      b = a+1
+      c = a+2
+      d = a+3
+      e = a+4
+      f = a+5
+      g = a+6
+      h = a+7
+    
+    #   & (f %in% n) & (g %in% n) & (h %in% n)
+      if( (b %in% m) & (c %in% m) & (d %in% m) & (e %in% m)  & (f %in% m) & (g %in% m) & (h %in% m)) {        #####################
+          valeur_1 <- a # a=23
+       
+          break
+      }
+    
+    }
+  list_rangs_var_1_0[i] <- valeur_1
+  }
+  list_rangs_var_1[[n]] = list_rangs_var_1_0
+}
+
+
+```
+
+```{r}
+for (n in 1:N){
+  hist(unlist(list_rangs_var_1[[n]]), 
+     xlim = c(0,100),
+     xlab ="",
+     main = "") 
+  
+  title(main = "Histogram of optimal n with criteria 18", sub = paste("Optimal n obtained in esch simulation, for stack chain", n, ", ratios =", round(ratios[n],2), ", abs_diff =", round(abs_diff[n],2), "\n"))
+}
+```
+
+
+
+#### Critère: Determination n by ratio_2
+```{r}
+list_rangs_var_2 = c()
+
+for (p in 1:N){
+  list_rangs_var_2_0 = list()
+  
+  for (i in 1:K){
+  
+  n = which( (ratio_2_list[[p]][[i]]<1.05)&(ratio_2_list[[p]][[i]]>0.95) & (diff_r_2_list[[p]][[i]]>-0.02)&(diff_r_2_list[[p]][[i]]<0.02) , arr.ind = TRUE) 
+  ######### 1) critère de convergence : variance        2) critère de convergence : difference 
+  ########### il y a plusieur n, n is a list 
+  # eg: n=[19,20,23,24,25,26,27]
+      valeur <- 0        
+    for (j in 1:length(n)){                                              ######### 2) critère de convergence : extension
+      a = n[j]
+      b = a+1
+      c = a+2
+      d = a+3
+      e = a+4
+      f = a+5
+      g = a+6
+      h = a+7
+    #  & (e %in% n) & (f %in% n) & (g %in% n) & (h %in% n)
+      if( (b %in% n) & (c %in% n) & (d %in% n)  & (e %in% n)   & (f %in% n) & (g %in% n) & (h %in% n)
+          ) {     ############ 3) critère de convergence : continuité
+        valeur = a # a=23
+        break
+      }
+    }
+
+  
+    list_rangs_var_2_0[i] = valeur 
+  }
+  list_rangs_var_2[[p]] = list_rangs_var_2_0
+}
+
+
+```
+
+```{r}
+for (n in 1:N){
+  hist(unlist(list_rangs_var_2[[n]]), 
+     xlim = c(0,100),
+     xlab ="",
+     main = "") 
+  
+  title(main = "Histogram of optimal n with criteria 18", sub = paste("Optimal n obtained in esch simulation, for stack chain", n, ", ratios =", round(ratios[n],2), ", abs_diff =", round(abs_diff[n],2), "\n"))
+}
+```
