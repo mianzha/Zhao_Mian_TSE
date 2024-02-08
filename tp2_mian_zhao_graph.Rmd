@@ -1,0 +1,281 @@
+---
+title: "Solution - Practical 2 \"Identifying graph structures\""
+author: "Mian Zhao"
+date: "Spring 2024"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+*This worksheet should contain your code and comments for Practical 1. You can use the example script `example_script.Rmd` (in the same directory) for inspiration.*
+
+*Create an R project in a directory `Practical 1` (or any directory on your computer) and fill it with the files from the directory with the same name downloaded on Moodle. All the data used in this practical in the subdirectory `Data` that should be in the directory `Practical 1`.*
+
+*Start your `R` session by loading these packages (and install them if you don't have them already):*
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, eval = TRUE}
+library(tidyverse)
+library(igraph)
+library(RColorBrewer)
+library(ggplot2)
+library(GGally)
+```
+
+## Introduction
+
+*In this script, you will analyze a data set collected at a corporate law partnership in a Northeastern US corporate law firm. In particular, we will look at the advice network among the attorneys of this firm. Various members' attributes are also part of the data set, including seniority, formal status (partner or associate), office in which they work (office 1 or 2), gender, and lawschool attended.*
+
+*The script is divided into two parts:*
+
+-   *First part: Calculation and visualization of centrality indices*
+-   *Second part: Definition and visualization of communities*
+
+*The goal of the practical is to provide nice visualizations of centrality measures et detected communities in the dataset, and relate them to actors' real attributes.*
+
+## 0. Preparation
+
+**Q1** *Get the igraph object stored in the file "lazega_advice.graphml". How many nodes and edges does it have? Is it directed? Weighted?*
+
+```{r}
+lazega_advice <- read.graph("C:/Doc/M2/analysis of graph/Data/lazega_advice.graphml", format = "graphml")
+paste("There are", length(V(lazega_advice)), "nodes and", length(E(lazega_advice)), "edges.")
+```
+
+```{r}
+is.directed(lazega_advice)
+```
+```{r}
+is.weighted(lazega_advice)
+```
+
+**Q2** *Make a nice plot of the graph, with any layout you think is best. This will be used in the next questions, so you can save the layout once, for all visualizations.*
+
+```{r}
+lazega_advice$layout <- layout_nicely(lazega_advice)
+plot(lazega_advice, 
+     vertex.size=7,
+    vertex.label.cex=0.8,
+   vertex.label.dist=1,
+   vertex.label.color = "black",
+   edge.color = rgb(0,0,0,.25))
+```
+
+**Q3** *Calculate the density, reciprocity, and transitivity (or clustering coefficient) of this graph. How would you describe the structure of this graph?*
+
+```{r}
+edge_density(lazega_advice) #length(E(lazega_advice))/(length(V(lazega_advice))*(length(lazega_advice)-1))
+```
+This density suggests that only a small part of the possible connections among nodes are realized.
+
+
+```{r}
+reciprocity(lazega_advice)
+```
+The value of reciprocity is small, which means that most of edges in the graph are unidirectional.
+
+```{r}
+transitivity(lazega_advice)
+```
+This transitivity suggests that the graph is dispersed and doesn't have much cluster or local connectivity among nodes. 
+
+
+## 1. Analyzing graph centralities
+
+### 1.1. Calculating centralities
+
+**Q4** *Calculate two centrality measures you think would be good to use for this network. It can be one of the 4 indices shown in the example script or others. Explain your choice.*
+We can use Betweenness Centrality and Closeness Centrality. Our graph is sparse with a low density and in this case, Betweenness Centrality generally can still have a good performance because 
+it measures the importance of a node in the flow of information or in the interaction between other nodes. The transitivity of our graph is relatively larger and if we consider it is a big value,
+we could say that there some local clusters in the graph, which means that Closeness Centrality can be used because it identifies nodes that are close to many other nodes.  
+
+#### Betweenness Centrality 
+```{r}
+between_norm <- betweenness(lazega_advice, directed = T, weights = NA, normalized = T)
+```
+
+
+#### Closeness Centrality
+```{r}
+close_norm <- closeness(lazega_advice, weights = NA, normalized = T)
+```
+
+
+
+**Q5** *Visualize how these indices are related to attorneys' seniority? Compare the two.*
+
+```{r}
+centrality_seniority <- data.frame(between_norm, close_norm, V(lazega_advice)$seniority)
+colnames(centrality_seniority) <- c("between", "closeness", "seniority")
+```
+
+```{r}
+ggpairs(centrality_seniority)
+```
+
+### 1.2 Visualize centralities
+
+**Q6** *Plot the graph with the color of nodes representing seniority the size of nodes reflecting their centrality value for each centrality index. Do you see any difference?*
+```{r}
+colors_between<- scales::dscale(centrality_seniority$between %>% cut(9), sequential_pal)
+colors_close <- scales::dscale(centrality_seniority$closeness %>% cut(8), sequential_pal)
+```
+
+```{r}
+plot(lazega_advice, 
+     vertex.size = centrality_seniority$seniority,
+    vertex.label.cex=0.8,
+    vertex.color = colors_between,
+   vertex.label.dist=1,
+   vertex.label.color = "black",
+   edge.color = rgb(0,0,0,.25))
+```
+```{r}
+plot(lazega_advice, 
+     vertex.size = centrality_seniority$seniority,
+    vertex.label.cex=0.8,
+    vertex.color = colors_close,
+   vertex.label.dist=1,
+   vertex.label.color = "black",
+   edge.color = rgb(0,0,0,.25))
+```
+
+## 2. Finding communities
+
+### 2.1 Using community-detection algorithms
+
+**Q7** *Many methods work better (or only) for undirected graphs. Turn the graph into an undirected graph using the function "as.undirected". Look carefully at the options available for this function and explain how you set them.*
+
+```{r}
+?as.undirected
+
+lazega_advice_un <- as.undirected(lazega_advice, mode = "collapse")
+```
+
+I create an undirected graph with the mode = "collapse". This method means that if a pair of nodes are connected, then we will replace all the directed edge between this pair of nodes by an undirected edge. 
+
+**Q8** *Use one community-detection method you think would be good to use for the undirected version of this network. It can be one of the 6 shown in the example script or others. Explain your choice.*
+
+```{r}
+lazega_louvain <- cluster_louvain(lazega_advice_un, weights=NULL)
+```
+
+**Q9** *The Hamming distance between two vectors of the same size is the number of matching components that are different in the two vectors.For example, the Hamming distance of [0,1,1,0] and [1,1,0,0] is 2 (the 1st an 3rd elements are different). Write a function to calculate the Hamming distance between two rows i and j of the unweighted adjacency matrix, removing the i-th and j-th elements of the rows. It should take as argument a graph and the two indices of the rows (corresponding to 2 nodes) and return a numeric.*
+
+```{r}
+hamming_graph <- function(graph, v1, v2){
+  
+  graph_adj = as_adjacency_matrix(graph)
+  l_1 = graph_adj[v1, -v1]
+  l_2 = graph_adj[v2, -v2]
+  
+  ham_d_list = c()
+  for (i in 1:length(l_1)){
+    ham_d_list[i] = (l_1[i] == l_2[i])
+  }
+  
+  ham_d = sum(ham_d_list)
+  return(ham_d)
+}
+```
+
+```{r}
+hamming_graph(lazega_advice_un, 3, 5)
+```
+
+**Q10** *Create a distance matrix for all nodes in the network using these Hamming distances. You can turn any matrix into a distance matrix with "as.dist".*
+
+```{r}
+lazega_adj = as_adjacency_matrix(lazega_advice_un)
+
+ham_matrix = matrix(nrow = 71, ncol = 71)
+for (i in 1:length(lazega_adj[1,])){
+  for (j in 1:length(lazega_adj[1,])){
+    ham_matrix[i,j] = hamming_graph(lazega_advice_un, i, j)
+  }
+}
+ham_dist <- as.dist(ham_matrix)
+ham_dist
+```
+**Q11** *Now perform a hierarchical clustering using the Hamming distances between nodes instead of the geodesic distances as in the example script. Take three clusters, because there are two offices so we might expect three communities.*
+
+```{r}
+lazega_hc <- hclust(ham_dist, method = "ward.D2")
+plot(lazega_hc, xlab="", cex=0.6)
+```
+
+```{r}
+plot(lazega_hc$height, xlab="", cex=0.6)
+```
+```{r}
+lazega_spclustering <- cutree(lazega_hc, k = 3)
+```
+
+### 2.2 Visualizing communities
+
+**Q12** *Visualize both sets of communities previously found. Use the shape of the nodes to indicate which offices individuals are part of (use the shapes "circle", "square", and "rectangle") and the colors to indicate the communities.*
+
+
+
+```{r}
+?vertex.shapes
+
+#the code for defining triangle is found in the manual of vertex.shapes
+# triangle vertex shape
+mytriangle <- function(coords, v = NULL, params) {
+  vertex.color <- params("vertex", "color")
+  if (length(vertex.color) != 1 && !is.null(v)) {
+    vertex.color <- vertex.color[v]
+  }
+  vertex.size <- 1 / 200 * params("vertex", "size")
+  if (length(vertex.size) != 1 && !is.null(v)) {
+    vertex.size <- vertex.size[v]
+  }
+
+  symbols(
+    x = coords[, 1], y = coords[, 2], bg = vertex.color,
+    stars = cbind(vertex.size, vertex.size, vertex.size),
+    add = TRUE, inches = FALSE
+  )
+}
+# clips as a circle
+add_shape("triangle",
+  clip = shapes("circle")$clip,
+  plot = mytriangle
+)
+```
+
+```{r}
+office_shapes <- c("circle", "triangle", "square")
+node_shapes <- office_shapes[V(lazega_advice_un)$office]
+```
+
+```{r}
+
+plot(lazega_advice_un,
+     vertex.size=10,
+ vertex.label.cex=0.8,
+ vertex.shape = node_shapes,
+ vertex.color=lazega_louvain$membership,
+ vertex.label.color=lazega_louvain$membership,
+ edge.color = rgb(0,0,0,.25))
+```
+
+```{r}
+plot(lazega_advice_un,
+     vertex.size=10,
+ vertex.label.cex=0.8,
+ vertex.shape = node_shapes,
+ vertex.color=lazega_spclustering,
+ vertex.label.color = lazega_spclustering,
+ edge.color = rgb(0,0,0,.25))
+```
+
+**Q13** *Compare the results. So far, which of the two community-detection methods would you prefer? Any idea of what you would improve if you were to continue looking for communities?*
+
+```{r}
+# YOUR CODE HERE
+```
